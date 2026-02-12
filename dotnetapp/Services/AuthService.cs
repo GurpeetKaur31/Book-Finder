@@ -1,0 +1,100 @@
+
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
+using dotnetapp.Models;
+using dotnetapp.Data;
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
+using Microsoft.IdentityModel.Tokens;
+using System.Runtime.CompilerServices;
+using System.Security.Cryptography;
+using System.Runtime.Intrinsics.Arm;
+
+namespace dotnetapp.Services
+{
+    public class AuthService : IAuthService
+    {
+        private readonly ApplicationDbContext _context;
+        private readonly IConfiguration _configuration;
+
+        private string HashPassword(string password)
+        {
+            using var sha=SHA256.Create();
+            var bytes = sha.ComputeHash(Encoding.UTF8.GetBytes(password));
+            return Convert.ToBase64String(bytes);
+        }
+
+        public AuthService(ApplicationDbContext context, IConfiguration configuration)
+        {
+            _context = context;
+            _configuration = configuration;
+        }
+
+        public async Task<(int, string)> Registration(User model, string role)
+        {
+            var existingUser = await _context.Users.FirstOrDefaultAsync(u => u.Email == model.Email);
+
+            if(existingUser != null)
+            {
+                return (0,"User already exists");
+            }
+
+            if(role!=UserRoles.BookReader && role!=UserRoles.BookRecommender)
+            return (0,"Invalid role");
+
+            model.Password=HashPassword(model.Password);
+            model.UserRole = role;
+
+            _context.Users.Add(model);
+            await _context.SaveChangesAsync();
+
+            return(1,"User registered successfully");
+        }
+
+        public async Task<(int, object)> Login(LoginModel model)
+        {
+            var user = await _context.Users.FirstOrDefaultAsync(u => u.Email == model.Email);
+
+            if(user == null)
+            {
+                return (0,"Invalid email");
+            }
+
+            if(user.Password != HashPassword(model.Password))
+            {
+                return (0,"Invalid password");
+            }
+
+            var claims = new List<Claim>
+            {
+                new Claim(ClaimTypes.Email, user.Email),
+                new Claim(ClaimTypes.Role, user.UserRole),
+                new Claim("username", user.Username),   
+            };
+
+            var token = GenerateToken(claims);
+
+            return(1, token);
+        }
+
+        private string GenerateToken(IEnumerable<Claim> claims)
+        {
+            var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["JWT:Secret"]));
+
+            var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+            var token = new JwtSecurityToken(
+                issuer: _configuration["JWT:ValidIssuer"],
+                audience: _configuration["JWT:ValidAudience"],
+                claims: claims,
+                expires: DateTime.Now.AddHours(2),
+                signingCredentials: creds
+            );
+
+            return new JwtSecurityTokenHandler().WriteToken(token);
+        }
+    }
+}
